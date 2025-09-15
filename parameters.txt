@@ -1,0 +1,107 @@
+Hyperparameter
+Value
+Gradient descent batch size
+512
+Entropy
+0.008
+Discount factor
+0.99
+Loss type
+Huber
+Learning rate
+0.00025
+Number of experience episodes between each policy-updating iteration
+20
+Number of epochs
+10
+
+
+/////////////////
+
+No.
+Steering angle (°)
+Speed (m/s)
+0
+-30.0
+1.10
+1
+-20.0
+1.10
+2
+-10.0
+1.10
+3
+-5.0
+1.10
+4
+0.0
+1.10
+5
+5.0
+1.10
+6
+10.0
+1.10
+7
+20.0
+1.10
+8
+30.0
+1.10
+9
+-30.0
+2.30
+10
+-20.0
+2.30
+11
+-10.0
+2.30
+12
+-5.0
+2.30
+13
+0.0
+2.30
+14
+5.0
+2.30
+15
+10.0
+2.30
+16
+20.0
+2.30
+17
+30.0
+2.30
+18
+-30.0
+3.60
+19
+-20.0
+3.60
+20
+-10.0
+3.60
+21
+-5.0
+3.60
+22
+0.0
+3.60
+23
+5.0
+3.60
+24
+10.0
+3.60
+25
+20.0
+3.60
+26
+30.0
+3.60
+/////
+Reinforcement learning algorithm
+PPO
