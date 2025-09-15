@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Custom Racing Line Creator</title>
+    <style>
+        body { margin: 0; padding: 20px; background: #000; }
+        canvas { border: 1px solid #333; background: #111; }
+        #data { margin-bottom: 10px; color: white; font-family: monospace; }
+        #controls { margin-bottom: 10px; color: white; font-family: monospace; }
+        button { padding: 8px 16px; margin: 5px; background: #333; color: white; border: 1px solid #555; cursor: pointer; }
+        button:hover { background: #555; }
+        .active { background: #ff4444 !important; }
+    </style>
+</head>
+<body>
+    <div id="data">
+        <textarea id="dataInput" rows="20" cols="120" placeholder="Paste your waypoint data here..." style="width: 100%; background: #222; color: white; border: 1px solid #444;">
+        </textarea>
+        <br><br>
+        <button onclick="processData()">Process Data</button>
+    </div>
+    
+    <div id="controls">
+        <button id="createBtn" class="active" onclick="setMode('create')">Create Path Mode</button>
+        <button id="editBtn" onclick="setMode('edit')">Edit Path Mode</button>
+        <button onclick="clearPath()">Clear Path</button>
+        <button onclick="undoLastPoint()">Undo Last</button>
+        <button onclick="exportPath()">Export Path</button>
+        <span style="margin-left: 20px;">Points: <span id="pointCount">0</span></span>
+    </div>
+    
+    <canvas id="canvas" width="1000" height="600"></canvas>
+    
+    <div id="pointInfo" style="margin-top: 10px; padding: 10px; background: #222; color: white; font-family: monospace; border: 1px solid #444; min-height: 100px;">
+        <strong>Create your own optimal racing line by clicking on the track!</strong>
+        <div id="infoContent">
+            <br><strong>Instructions:</strong><br>
+            • <strong>Create Path Mode:</strong> Click anywhere on track to add points to your racing line<br>
+            • <strong>Edit Path Mode:</strong> Click on existing path points to move them<br>
+            • <strong>Path will automatically connect</strong> and show as red line<br>
+            • <strong>Click on waypoints</strong> (gray dots) to see detailed track information
+        </div>
+    </div>
+
+    <script>
+        let canvas = document.getElementById('canvas');
+        let ctx = canvas.getContext('2d');
+        let waypoints = [];
+        let customPath = [];
+        let turnAnalysis = [];
+        let scale, minX, maxX, minY, maxY, margin = 50;
+        let mode = 'create'; // 'create' or 'edit'
+        let selectedPathPoint = -1;
+        let dragging = false;
+
+        canvas.addEventListener('click', handleCanvasClick);
+        canvas.addEventListener('mousedown', handleMouseDown);
+        canvas.addEventListener('mousemove', handleMouseMove);
+        canvas.addEventListener('mouseup', handleMouseUp);
+
+        function setMode(newMode) {
+            mode = newMode;
+            selectedPathPoint = -1;
+            
+            document.getElementById('createBtn').classList.remove('active');
+            document.getElementById('editBtn').classList.remove('active');
+            document.getElementById(newMode + 'Btn').classList.add('active');
+            
+            draw();
+        }
+
+        function processData() {
+            const data = document.getElementById('dataInput').value;
+            parseData(data);
+            if (waypoints.length > 0) {
+                analyzeTrack();
+                draw();
+            }
+        }
+
+        function parseData(text) {
+            waypoints = [];
+            
+            const lines = text.split('\n');
+            for (let line of lines) {
+                line = line.trim();
+                if (line.includes('[') && line.includes(']')) {
+                    const numbers = line.match(/-?\d+\.?\d*e?[+-]?\d*/g);
+                    if (numbers && numbers.length >= 6) {
+                        const wp = numbers.slice(0, 6).map(n => parseFloat(n));
+                        if (wp.every(n => !isNaN(n))) {
+                            waypoints.push(wp);
+                        }
+                    }
+                }
+            }
+            
+            console.log('Parsed', waypoints.length, 'waypoints');
+        }
+
+        function analyzeTrack() {
+            if (waypoints.length < 3) return;
+            
+            turnAnalysis = [];
+            const n = waypoints.length;
+            
+            for (let i = 0; i < n; i++) {
+                const prev = waypoints[(i - 1 + n) % n];
+                const curr = waypoints[i];
+                const next = waypoints[(i + 1) % n];
+                
+                const v1x = curr[0] - prev[0];
+                const v1y = curr[1] - prev[1];
+                const v2x = next[0] - curr[0];
+                const v2y = next[1] - curr[1];
+                const cross = v1x * v2y - v1y * v2x;
+                
+                const mag1 = Math.sqrt(v1x * v1x + v1y * v1y) + 0.001;
+                const mag2 = Math.sqrt(v2x * v2x + v2y * v2y) + 0.001;
+                const curvature = Math.abs(cross) / Math.pow((mag1 + mag2) / 2, 2);
+                
+                const maxSpeed = 4.0;
+                const minSpeed = 0.8;
+                const speedFactor = Math.max(0, 1 - curvature * 8);
+                const recommendedSpeed = minSpeed + (maxSpeed - minSpeed) * speedFactor;
+                
+                const steeringAngle = Math.atan2(cross, v1x * v2x + v1y * v2y) * 180 / Math.PI;
+                
+                const leftX = curr[2], leftY = curr[3];
+                const rightX = curr[4], rightY = curr[5];
+                const centerX = curr[0], centerY = curr[1];
+                
+                const distToLeft = Math.sqrt((centerX - leftX)**2 + (centerY - leftY)**2);
+                const distToRight = Math.sqrt((centerX - rightX)**2 + (centerY - rightY)**2);
+                const trackWidth = distToLeft + distToRight;
+                
+                turnAnalysis.push({
+                    index: i,
+                    curvature: curvature,
+                    turnDirection: Math.sign(cross),
+                    turnDirectionName: cross > 0.001 ? 'Left' : cross < -0.001 ? 'Right' : 'Straight',
+                    recommendedSpeed: recommendedSpeed,
+                    steeringAngle: steeringAngle,
+                    trackWidth: trackWidth,
+                    distToLeft: distToLeft,
+                    distToRight: distToRight,
+                    centerPosition: [centerX, centerY],
+                    leftBoundary: [leftX, leftY],
+                    rightBoundary: [rightX, rightY]
+                });
+            }
+        }
+
+        function clearPath() {
+            customPath = [];
+            selectedPathPoint = -1;
+            updatePointCount();
+            draw();
+        }
+
+        function undoLastPoint() {
+            if (customPath.length > 0) {
+                customPath.pop();
+                updatePointCount();
+                draw();
+            }
+        }
+
+        function exportPath() {
+            if (customPath.length === 0) {
+                alert('No path to export!');
+                return;
+            }
+            
+            const pathData = customPath.map(point => 
+                `[${point.x.toFixed(6)}, ${point.y.toFixed(6)}]`
+            ).join(',\n');
+            
+            const exportWindow = window.open();
+            exportWindow.document.write(`
+                <h3>Custom Racing Line - ${customPath.length} points</h3>
+                <textarea rows="20" cols="80" style="font-family: monospace;">[
+${pathData}
+]</textarea>
+                <br><br>
+                <p>Copy this data for your reward function!</p>
+            `);
+        }
+
+        function updatePointCount() {
+            document.getElementById('pointCount').textContent = customPath.length;
+        }
+
+        function handleMouseDown(event) {
+            if (mode !== 'edit') return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = event.clientX - rect.left;
+            const mouseY = event.clientY - rect.top;
+            
+            // Check if clicking on a path point
+            for (let i = 0; i < customPath.length; i++) {
+                const [x, y] = toCanvas(customPath[i].x, customPath[i].y);
+                const distance = Math.sqrt((mouseX - x)**2 + (mouseY - y)**2);
+                
+                if (distance < 10) {
+                    selectedPathPoint = i;
+                    dragging = true;
+                    canvas.style.cursor = 'grabbing';
+                    draw();
+                    event.preventDefault();
+                    return;
+                }
+            }
+        }
+
+        function handleMouseMove(event) {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = event.clientX - rect.left;
+            const mouseY = event.clientY - rect.top;
+            
+            if (dragging && selectedPathPoint >= 0) {
+                // Update the selected path point position
+                const worldPos = toWorld(mouseX, mouseY);
+                customPath[selectedPathPoint].x = worldPos[0];
+                customPath[selectedPathPoint].y = worldPos[1];
+                draw();
+                return;
+            }
+            
+            // Update cursor based on what's under mouse
+            let cursor = 'crosshair';
+            
+            if (mode === 'edit') {
+                // Check if over a path point
+                for (let i = 0; i < customPath.length; i++) {
+                    const [x, y] = toCanvas(customPath[i].x, customPath[i].y);
+                    const distance = Math.sqrt((mouseX - x)**2 + (mouseY - y)**2);
+                    if (distance < 10) {
+                        cursor = 'grab';
+                        break;
+                    }
+                }
+            }
+            
+            // Check if over a waypoint
+            for (let i = 0; i < waypoints.length; i++) {
+                const [x, y] = toCanvas(waypoints[i][0], waypoints[i][1]);
+                const distance = Math.sqrt((mouseX - x)**2 + (mouseY - y)**2);
+                if (distance < 15) {
+                    cursor = 'pointer';
+                    break;
+                }
+            }
+            
+            canvas.style.cursor = cursor;
+        }
+
+        function handleMouseUp(event) {
+            dragging = false;
+            selectedPathPoint = -1;
+            canvas.style.cursor = 'crosshair';
+        }
+
+        function handleCanvasClick(event) {
+            if (dragging) return;
+            
+            const rect = canvas.getBoundingClientRect();
+            const clickX = event.clientX - rect.left;
+            const clickY = event.clientY - rect.top;
+            
+            // Check if clicking on a waypoint for info
+            let closestWaypoint = -1;
+            let closestWaypointDistance = Infinity;
+            
+            waypoints.forEach((wp, i) => {
+                const [x, y] = toCanvas(wp[0], wp[1]);
+                const distance = Math.sqrt((clickX - x)**2 + (clickY - y)**2);
+                
+                if (distance < closestWaypointDistance && distance < 15) {
+                    closestWaypointDistance = distance;
+                    closestWaypoint = i;
+                }
+            });
+            
+            if (closestWaypoint !== -1) {
+                showWaypointInfo(closestWaypoint);
+                return;
+            }
+            
+            // If in create mode, add point to custom path
+            if (mode === 'create') {
+                const worldPos = toWorld(clickX, clickY);
+                customPath.push({
+                    x: worldPos[0],
+                    y: worldPos[1],
+                    index: customPath.length
+                });
+                updatePointCount();
+                draw();
+                showPathInfo();
+            }
+        }
+
+        function draw() {
+            if (waypoints.length === 0) return;
+            
+            // Calculate bounds
+            minX = Infinity; maxX = -Infinity; minY = Infinity; maxY = -Infinity;
+            waypoints.forEach(wp => {
+                for (let i = 0; i < 6; i += 2) {
+                    minX = Math.min(minX, wp[i]);
+                    maxX = Math.max(maxX, wp[i]);
+                    minY = Math.min(minY, wp[i + 1]);
+                    maxY = Math.max(maxY, wp[i + 1]);
+                }
+            });
+
+            const scaleX = (canvas.width - 2 * margin) / (maxX - minX);
+            const scaleY = (canvas.height - 2 * margin) / (maxY - minY);
+            scale = Math.min(scaleX, scaleY);
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw track boundaries
+            ctx.strokeStyle = '#444';
+            ctx.lineWidth = 2;
+            
+            // Left boundary
+            ctx.beginPath();
+            waypoints.forEach((wp, i) => {
+                const [x, y] = toCanvas(wp[2], wp[3]);
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+
+            // Right boundary
+            ctx.beginPath();
+            waypoints.forEach((wp, i) => {
+                const [x, y] = toCanvas(wp[4], wp[5]);
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+
+            // Draw original centerline
+            ctx.strokeStyle = '#666';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            waypoints.forEach((wp, i) => {
+                const [x, y] = toCanvas(wp[0], wp[1]);
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+
+            // Draw waypoint markers
+            ctx.fillStyle = '#888';
+            waypoints.forEach((wp, i) => {
+                const [x, y] = toCanvas(wp[0], wp[1]);
+                ctx.beginPath();
+                ctx.arc(x, y, 4, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            // Draw custom racing line
+            if (customPath.length > 1) {
+                ctx.strokeStyle = '#ff4444';
+                ctx.lineWidth = 4;
+                ctx.beginPath();
+                customPath.forEach((point, i) => {
+                    const [x, y] = toCanvas(point.x, point.y);
+                    if (i === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                });
+                ctx.stroke();
+            }
+
+            // Draw custom path points
+            customPath.forEach((point, i) => {
+                const [x, y] = toCanvas(point.x, point.y);
+                
+                // Point circle
+                ctx.fillStyle = i === selectedPathPoint ? '#ffff00' : '#ff6666';
+                ctx.beginPath();
+                ctx.arc(x, y, 6, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Point number
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 10px monospace';
+                ctx.fillText(i.toString(), x + 10, y - 10);
+                
+                // Highlight selected point
+                if (i === selectedPathPoint) {
+                    ctx.strokeStyle = '#ffff00';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.arc(x, y, 10, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+            });
+
+            // Start/finish line
+            if (waypoints.length > 0) {
+                const start = waypoints[0];
+                const [leftX, leftY] = toCanvas(start[2], start[3]);
+                const [rightX, rightY] = toCanvas(start[4], start[5]);
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 3;
+                ctx.setLineDash([10, 10]);
+                ctx.beginPath();
+                ctx.moveTo(leftX, leftY);
+                ctx.lineTo(rightX, rightY);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+        }
+
+        function toCanvas(x, y) {
+            return [
+                (x - minX) * scale + margin,
+                canvas.height - ((y - minY) * scale + margin)
+            ];
+        }
+
+        function toWorld(canvasX, canvasY) {
+            return [
+                (canvasX - margin) / scale + minX,
+                (canvas.height - canvasY - margin) / scale + minY
+            ];
+        }
+
+        function showWaypointInfo(index) {
+            if (index < 0 || index >= waypoints.length) return;
+            
+            const wp = waypoints[index];
+            const analysis = turnAnalysis[index];
+            
+            const infoContent = document.getElementById('infoContent');
+            infoContent.innerHTML = `
+                <h3>Waypoint ${index} Information</h3>
+                
+                <strong>Position:</strong> (${wp[0].toFixed(3)}, ${wp[1].toFixed(3)})<br>
+                <strong>Left Boundary:</strong> (${wp[2].toFixed(3)}, ${wp[3].toFixed(3)})<br>
+                <strong>Right Boundary:</strong> (${wp[4].toFixed(3)}, ${wp[5].toFixed(3)})<br>
+                <strong>Track Width:</strong> ${analysis.trackWidth.toFixed(3)} m<br>
+                <strong>Turn Type:</strong> ${analysis.turnDirectionName}<br>
+                <strong>Curvature:</strong> ${analysis.curvature.toFixed(4)}<br>
+                <strong>Recommended Speed:</strong> ${analysis.recommendedSpeed.toFixed(2)} m/s<br>
+                <strong>Steering Angle:</strong> ${analysis.steeringAngle.toFixed(2)}°<br>
+            `;
+        }
+
+        function showPathInfo() {
+            if (customPath.length === 0) return;
+            
+            const lastPoint = customPath[customPath.length - 1];
+            const infoContent = document.getElementById('infoContent');
+            infoContent.innerHTML = `
+                <h3>Custom Racing Line</h3>
+                <strong>Total Points:</strong> ${customPath.length}<br>
+                <strong>Last Point:</strong> (${lastPoint.x.toFixed(3)}, ${lastPoint.y.toFixed(3)})<br>
+                <br>
+                <strong>Tip:</strong> Continue clicking to add more points, or switch to Edit Mode to move existing points!<br>
+                Use Export Path button to get coordinates for your reward function.
+            `;
+        }
+
+        // Auto-fill sample data
+        document.getElementById('dataInput').value = `[[ 3.40831496e+00  1.47177029e+00  3.41109087e+00  1.09077962e+00  3.40553905e+00  1.85276094e+00]
+ [ 3.27831602e+00  1.47124499e+00  3.28109193e+00  1.09025502e+00  3.27554011e+00  1.85223496e+00]
+ [ 3.14832323e+00  1.46987604e+00  3.15109898e+00  1.08890054e+00  3.14554748e+00  1.85085115e+00]
+ [ 2.97492754e+00  1.46805000e+00  2.97369003e+00  1.08705199e+00  2.97616506e+00  1.84904802e+00]
+ [ 2.67155445e+00  1.47321600e+00  2.67057300e+00  1.09221697e+00  2.67253590e+00  1.85421503e+00]
+ [ 2.36816895e+00  1.46961248e+00  2.36431193e+00  1.08863199e+00  2.37202597e+00  1.85059297e+00]
+ [ 2.06539094e+00  1.47934300e+00  2.01576996e+00  1.10158801e+00  2.11501193e+00  1.85709798e+00]
+ [ 1.77025199e+00  1.54816550e+00  1.66505897e+00  1.18197501e+00  1.87544501e+00  1.91435599e+00]
+ [ 1.48337299e+00  1.64654750e+00  1.40893698e+00  1.27288997e+00  1.55780900e+00  2.02020502e+00]
+ [ 1.18252099e+00  1.66549605e+00  1.23861599e+00  1.28864801e+00  1.12642598e+00  2.04234409e+00]
+ [ 8.99659157e-01  1.55953050e+00  1.00877094e+00  1.19448900e+00  7.90547371e-01  1.92457199e+00]
+ [ 6.05805874e-01  1.49305898e+00  6.64417922e-01  1.11659396e+00  5.47193825e-01  1.86952400e+00]
+ [ 3.03621799e-01  1.46687299e+00  3.21615398e-01  1.08629799e+00  2.85628200e-01  1.84744799e+00]
+ [ 2.23879935e-04  1.46443051e+00 -1.64591102e-03  1.08343506e+00  2.09367089e-03  1.84542596e+00]
+ [-3.03139806e-01  1.46985096e+00 -3.06661397e-01  1.08886695e+00 -2.99618214e-01  1.85083497e+00]
+ [-6.06551170e-01  1.47003901e+00 -6.06693625e-01  1.08903897e+00 -6.06408715e-01  1.85103905e+00]
+ [-9.09969956e-01  1.47007746e+00 -9.10584807e-01  1.08907795e+00 -9.09355104e-01  1.85107696e+00]
+ [-1.21338701e+00  1.47101849e+00 -1.21475101e+00  1.09002101e+00 -1.21202302e+00  1.85201597e+00]
+ [-1.51680350e+00  1.47224998e+00 -1.51855898e+00  1.09125400e+00 -1.51504803e+00  1.85324597e+00]
+ [-1.82021797e+00  1.47381496e+00 -1.82255697e+00  1.09282196e+00 -1.81787896e+00  1.85480797e+00]
+ [-2.12362742e+00  1.47597599e+00 -2.12661195e+00  1.09498799e+00 -2.12064290e+00  1.85696399e+00]
+ [-2.42703199e+00  1.47856849e+00 -2.42498803e+00  1.09757400e+00 -2.42907596e+00  1.85956299e+00]
+ [-2.73036492e+00  1.47272098e+00 -2.71911693e+00  1.09188700e+00 -2.74161291e+00  1.85355496e+00]
+ [-3.03349411e+00  1.46065748e+00 -3.03252912e+00  1.07965899e+00 -3.03445911e+00  1.84165597e+00]
+ [-3.33646691e+00  1.47117800e+00 -3.38957191e+00  1.09389699e+00 -3.28336191e+00  1.84845901e+00]
+ [-3.63015199e+00  1.54459548e+00 -3.74919701e+00  1.18267095e+00 -3.51110697e+00  1.90652001e+00]
+ [-3.91029298e+00  1.65993994e+00 -4.01127195e+00  1.29256499e+00 -3.80931401e+00  2.02731490e+00]
+ [-4.20968533e+00  1.70393455e+00 -4.18280888e+00  1.32388401e+00 -4.23656178e+00  2.08398509e+00]
+ [-4.49638748e+00  1.61928254e+00 -4.30109787e+00  1.29213905e+00 -4.69167709e+00  1.94642603e+00]
+ [-4.70831442e+00  1.40571749e+00 -4.38322878e+00  1.20702100e+00 -5.03340006e+00  1.60441399e+00]
+ [-4.80200839e+00  1.11886102e+00 -4.43330288e+00  1.02285600e+00 -5.17071390e+00  1.21486604e+00]
+ [-4.86042953e+00  8.21124166e-01 -4.48678017e+00  7.46645212e-01 -5.23407888e+00  8.95603120e-01]
+ [-4.92063236e+00  5.23741052e-01 -4.54702377e+00  4.49057311e-01 -5.29424095e+00  5.98424792e-01]
+ [-4.97938085e+00  2.26065055e-01 -4.60474777e+00  1.56701505e-01 -5.35401392e+00  2.95428604e-01]
+ [-5.03106403e+00 -7.26832785e-02 -4.65006399e+00 -7.23711103e-02 -5.41206408e+00 -7.29954466e-02]
+ [-4.97920370e+00 -3.69562149e-01 -4.62621021e+00 -2.26186693e-01 -5.33219719e+00 -5.12937605e-01]
+ [-4.80975294e+00 -6.17946208e-01 -4.54911184e+00 -3.40047896e-01 -5.07039404e+00 -8.95844519e-01]
+ [-4.55031300e+00 -7.71570340e-01 -4.40311718e+00 -4.20152694e-01 -4.69750881e+00 -1.12298799e+00]
+ [-4.25764513e+00 -8.49020943e-01 -4.17823315e+00 -4.76388901e-01 -4.33705711e+00 -1.22165298e+00]
+ [-3.95840251e+00 -8.97691250e-01 -3.91030192e+00 -5.19739509e-01 -4.00650311e+00 -1.27564299e+00]
+ [-3.65666354e+00 -9.25510615e-01 -3.59251904e+00 -5.49949229e-01 -3.72080803e+00 -1.30107200e+00]
+ [-3.36268747e+00 -9.99444783e-01 -3.25583696e+00 -6.33734584e-01 -3.46953797e+00 -1.36515498e+00]
+ [-3.07487905e+00 -1.09550363e+00 -2.95722008e+00 -7.33126283e-01 -3.19253802e+00 -1.45788097e+00]
+ [-2.78615642e+00 -1.18664232e+00 -2.70100093e+00 -8.15280616e-01 -2.87131190e+00 -1.55800402e+00]
+ [-2.48602903e+00 -1.23048526e+00 -2.43900394e+00 -8.52398515e-01 -2.53305411e+00 -1.60857201e+00]
+ [-2.18420553e+00 -1.26150864e+00 -2.14827609e+00 -8.82206321e-01 -2.22013497e+00 -1.64081097e+00]
+ [-1.88193250e+00 -1.28770837e+00 -1.88255000e+00 -9.06708777e-01 -1.88131499e+00 -1.66870797e+00]
+ [-1.58036798e+00 -1.26058498e+00 -1.65427995e+00 -8.86822999e-01 -1.50645602e+00 -1.63434696e+00]
+ [-1.29134047e+00 -1.17093658e+00 -1.39723396e+00 -8.04948211e-01 -1.18544698e+00 -1.53692496e+00]
+ [-9.99645382e-01 -1.09255004e+00 -1.03422904e+00 -7.13123083e-01 -9.65061724e-01 -1.47197700e+00]
+ [-6.98483229e-01 -1.11691737e+00 -6.08019173e-01 -7.46812701e-01 -7.88947284e-01 -1.48702204e+00]
+ [-4.20046791e-01 -1.23421893e+00 -2.62752503e-01 -8.87203872e-01 -5.77341080e-01 -1.58123398e+00]
+ [-1.47770368e-01 -1.36656100e+00 -2.31426209e-02 -1.00652099e+00 -2.72398114e-01 -1.72660100e+00]
+ [ 1.48196407e-01 -1.43089849e+00  1.52258307e-01 -1.04991996e+00  1.44134507e-01 -1.81187701e+00]
+ [ 4.42135945e-01 -1.37353599e+00  3.02244395e-01 -1.01914704e+00  5.82027495e-01 -1.72792494e+00]
+ [ 6.98730946e-01 -1.21294942e+00  4.62688506e-01 -9.13875878e-01  9.34773386e-01 -1.51202297e+00]
+ [ 9.14534122e-01 -1.00069988e+00  6.53618276e-01 -7.23059773e-01  1.17544997e+00 -1.27833998e+00]
+ [ 1.13853639e+00 -7.99584806e-01  9.40151811e-01 -4.74308610e-01  1.33692098e+00 -1.12486100e+00]
+ [ 1.42117047e+00 -6.91999570e-01  1.33014500e+00 -3.22033197e-01  1.51219594e+00 -1.06196594e+00]
+ [ 1.72215348e+00 -6.56080872e-01  1.70453095e+00 -2.75488794e-01  1.73977602e+00 -1.03667295e+00]
+ [ 2.02460402e+00 -6.64018124e-01  2.05826807e+00 -2.84508288e-01  1.99093997e+00 -1.04352796e+00]
+ [ 2.32458007e+00 -7.09572151e-01  2.40520406e+00 -3.37200314e-01  2.24395609e+00 -1.08194399e+00]
+ [ 2.61521995e+00 -7.91808024e-01  2.78363395e+00 -4.50051099e-01  2.44680595e+00 -1.13356495e+00]
+ [ 2.85745156e+00 -9.72153604e-01  3.15020609e+00 -7.28318214e-01  2.56469703e+00 -1.21598899e+00]
+ [ 2.98984897e+00 -1.24062604e+00  3.31548595e+00 -1.04283404e+00  2.66421199e+00 -1.43841803e+00]
+ [ 3.16747904e+00 -1.48245150e+00  3.40464997e+00 -1.18427205e+00  2.93030810e+00 -1.78063095e+00]
+ [ 3.44287407e+00 -1.60103202e+00  3.54958606e+00 -1.23528099e+00  3.33616209e+00 -1.96678305e+00]
+ [ 3.74233603e+00 -1.64971852e+00  3.79267097e+00 -1.27205801e+00  3.69200110e+00 -2.02737904e+00]
+ [ 4.04406786e+00 -1.68116003e+00  4.07049990e+00 -1.30107796e+00  4.01763582e+00 -2.06124210e+00]
+ [ 4.34719396e+00 -1.69178355e+00  4.31932878e+00 -1.31180406e+00  4.37505913e+00 -2.07176304e+00]
+ [ 4.64341450e+00 -1.63744152e+00  4.49915600e+00 -1.28480804e+00  4.78767300e+00 -1.99007499e+00]
+ [ 4.89285159e+00 -1.46854395e+00  4.60492706e+00 -1.21902394e+00  5.18077612e+00 -1.71806395e+00]
+ [ 5.02352953e+00 -1.19975597e+00  4.65241623e+00 -1.11352599e+00  5.39464283e+00 -1.28598595e+00]
+ [ 5.02476406e+00 -8.97480905e-01  4.64430523e+00 -9.17773902e-01  5.40522289e+00 -8.77187908e-01]
+ [ 4.99126196e+00 -5.95969588e-01  4.61251497e+00 -6.37342691e-01  5.37000895e+00 -5.54596484e-01]
+ [ 4.95887232e+00 -2.94288099e-01  4.58013487e+00 -3.35747600e-01  5.33760977e+00 -2.52828598e-01]
+ [ 4.92522836e+00  7.25677051e-03  4.54635286e+00 -3.29191908e-02  5.30410385e+00  4.74327318e-02]
+ [ 4.89488435e+00  3.09149802e-01  4.51673985e+00  2.62589693e-01  5.27302885e+00  3.55709910e-01]
+ [ 4.85111308e+00  6.09225392e-01  4.47437716e+00  5.52381814e-01  5.22784901e+00  6.66068971e-01]
+ [ 4.80437255e+00  9.09021705e-01  4.43427706e+00  8.18520904e-01  5.17446804e+00  9.99522507e-01]
+ [ 4.70840502e+00  1.19384402e+00  4.39335489e+00  9.79591012e-01  5.02345514e+00  1.40809703e+00]
+ [ 4.48014259e+00  1.38663399e+00  4.30430698e+00  1.04863596e+00  4.65597820e+00  1.72463202e+00]
+ [ 4.18799782e+00  1.46373951e+00  4.13262987e+00  1.08678401e+00  4.24336576e+00  1.84069502e+00]
+ [ 3.88513708e+00  1.47393000e+00  3.87964606e+00  1.09297001e+00  3.89062810e+00  1.85488999e+00]
+ [ 3.58172643e+00  1.47247100e+00  3.58341193e+00  1.09147501e+00  3.58004093e+00  1.85346699e+00]
+ [ 3.40831496e+00  1.47177029e+00  3.41109087e+00  1.09077962e+00  3.40553905e+00  1.85276094e+00]]`;
+
+    </script>
+</body>
+</html>
